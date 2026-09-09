@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stopColor="#0a0f1d" />
+      <stop offset="100%" stopColor="#020617" />
+    </linearGradient>
+
+    <filter id="soft-glow" x="-30%" y="-50%" width="160%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <linearGradient id="tube-body" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stopColor="#0284c7" />
+      <stop offset="20%" stopColor="#38bdf8" />
+      <stop offset="50%" stopColor="#ffffff" />
+      <stop offset="80%" stopColor="#38bdf8" />
+      <stop offset="100%" stopColor="#0284c7" />
+    </linearGradient>
+
+    <linearGradient id="metal-cap" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stopColor="#cbd5e1" />
+      <stop offset="100%" stopColor="#475569" />
+    </linearGradient>
+  </defs>
+
+  {/* Sleek Dark Canvas */}
+  <rect width="64" height="64" rx="16" fill="url(#bg)" stroke="#1e293b" stroke-width="1.5" />
+
+  {/* Ambient Diffused Glow */}
+  <rect x="10" y="27" width="44" height="10" rx="5" fill="#38bdf8" opacity="0.25" filter="url(#soft-glow)" />
+
+  {/* Left Precision Terminal Pin & Socket */}
+  <line x1="6" y1="32" x2="10" y2="32" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" />
+  <rect x="10" y="27.5" width="3.5" height="9" rx="1" fill="url(#metal-cap)" />
+
+  {/* Right Precision Terminal Pin & Socket */}
+  <rect x="50.5" y="27.5" width="3.5" height="9" rx="1" fill="url(#metal-cap)" />
+  <line x1="54" y1="32" x2="58" y2="32" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" />
+
+  {/* Pure Glass Tube with Modern Phosphor Lumen */}
+  <rect x="13" y="26.5" width="38" height="11" rx="5.5" fill="url(#tube-body)" stroke="#7dd3fc" stroke-width="0.75" filter="url(#soft-glow)" />
+
+  {/* Clean High-Output Filament Line */}
+  <line x1="17" y1="32" x2="47" y2="32" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" />
+
+  {/* Top Specular Glaze */}
+  <line x1="18" y1="28.5" x2="46" y2="28.5" stroke="#ffffff" stroke-width="1" stroke-linecap="round" opacity="0.8" />
+</svg>

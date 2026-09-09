@@ -1,0 +1,42 @@
+#!/bin/sh
+set -e
+
+# Detect if cloudflare/ has modifications in the commits being pushed
+has_cf_changes=0
+
+# Read push info from stdin: <local_ref> <local_sha> <remote_ref> <remote_sha>
+while read local_ref local_sha remote_ref remote_sha; do
+  if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+    continue
+  fi
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+    range="$local_sha"
+  else
+    range="$remote_sha..$local_sha"
+  fi
+  
+  if git diff --name-only "$range" -- cloudflare/ 2>/dev/null | grep -q "^cloudflare/"; then
+    has_cf_changes=1
+  fi
+done
+
+# Fallback check against origin/main if stdin was empty
+if [ "$has_cf_changes" -eq 0 ]; then
+  if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    if git diff --name-only origin/main..HEAD -- cloudflare/ 2>/dev/null | grep -q "^cloudflare/"; then
+      has_cf_changes=1
+    fi
+  fi
+fi
+
+# If Cloudflare files changed, auto-deploy before testing
+if [ "$has_cf_changes" -eq 1 ]; then
+  echo "⚡ Cloudflare files modified. Deploying worker update via npm run deploy:worker..."
+  npm run deploy:worker
+  echo "✅ Cloudflare Worker deployed successfully. Allowing edge propagation..."
+  sleep 6
+fi
+
+echo "🧪 Running pre-push test suite..."
+npm test
+echo "✅ All tests passed! Push permitted."
