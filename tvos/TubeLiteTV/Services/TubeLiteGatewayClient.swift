@@ -167,6 +167,11 @@ public class TubeLiteGatewayClient: ObservableObject {
             diagnostics.log("Sent POST to InnerTube player endpoint")
             let (data, response) = try await session.data(for: request)
             
+            guard !Task.isCancelled else {
+                diagnostics.failureStage = "Cancelled"
+                return PlaybackResolution(error: "Preload cancelled", diagnostics: diagnostics)
+            }
+            
             guard let httpRes = response as? HTTPURLResponse else {
                 diagnostics.failureStage = "No HTTP Response"
                 return PlaybackResolution(error: "No HTTP response received from YouTube", diagnostics: diagnostics)
@@ -219,6 +224,10 @@ public class TubeLiteGatewayClient: ObservableObject {
             
             var filteredMaster: String?
             var hlsMaxHeight = 0
+            if Task.isCancelled {
+                diagnostics.failureStage = "Cancelled"
+                return PlaybackResolution(error: "Preload cancelled", diagnostics: diagnostics)
+            }
             if let hlsURLString = streamingData["hlsManifestUrl"] as? String,
                let hlsURL = URL(string: hlsURLString) {
                 diagnostics.log("Fetching HLS master (avc1\(allowAV1 ? "+av01" : ""))")
@@ -253,7 +262,7 @@ public class TubeLiteGatewayClient: ObservableObject {
                 diagnostics.resolvedUrl = pick.video.url.absoluteString
                 // Keep progressive handy when HLS isn't available as a soft fallback.
                 var progressiveURL: URL?
-                if filteredMaster == nil {
+                if filteredMaster == nil, !Task.isCancelled {
                     progressiveURL = await Self.resolveAndroidProgressive(videoId: videoId, session: session)?.url
                     if progressiveURL != nil {
                         diagnostics.log("Also resolved progressive fallback")
@@ -283,9 +292,15 @@ public class TubeLiteGatewayClient: ObservableObject {
                 )
             }
             
-            // No usable HLS — prefer ANDROID muxed progressive over fragile remote composition.
+            // No usable HLS — ANDROID muxed progressive (the path that actually plays on tvOS).
+            guard !Task.isCancelled else {
+                diagnostics.failureStage = "Cancelled"
+                return PlaybackResolution(error: "Preload cancelled", diagnostics: diagnostics)
+            }
             if let progressive = await Self.resolveAndroidProgressive(videoId: videoId, session: session) {
-                diagnostics.log("Fallback progressive mp4 itag=\(progressive.itag ?? 0)")
+                diagnostics.log(
+                    "Fallback progressive mp4 itag=\(progressive.itag ?? 0) \(progressive.height ?? 0)p"
+                )
                 diagnostics.resolvedUrl = progressive.url.absoluteString
                 return PlaybackResolution(
                     progressiveURL: progressive.url,
@@ -293,12 +308,14 @@ public class TubeLiteGatewayClient: ObservableObject {
                     compositionAudioURL: adaptivePick?.audio.url,
                     selectedHeight: progressive.height ?? 360,
                     selectedCodec: progressive.codecs,
-                    durationSeconds: durationSeconds > 0 ? durationSeconds : (progressive.approxDurationMs.map { $0 / 1000 } ?? 0),
+                    durationSeconds: durationSeconds > 0
+                        ? durationSeconds
+                        : (progressive.approxDurationMs.map { $0 / 1000 } ?? 0),
                     diagnostics: diagnostics
                 )
             }
             
-            // Last resort: composition at whatever adaptive we have.
+            // Last resort only: composition at whatever adaptive we have.
             if let pick = adaptivePick {
                 diagnostics.log("HLS/progressive missing — composition at \(adaptiveHeight)p")
                 return PlaybackResolution(
@@ -345,11 +362,23 @@ public class TubeLiteGatewayClient: ObservableObject {
         videoId: String,
         session: URLSession
     ) async -> AdaptiveStream? {
+        await resolveAndroidStreams(videoId: videoId, session: session, allowAV1: false).progressive
+    }
+    
+    /// One ANDROID player fetch → best adaptive A/V pair + best muxed progressive.
+    private static func resolveAndroidStreams(
+        videoId: String,
+        session: URLSession,
+        allowAV1: Bool
+    ) async -> (
+        adaptive: (video: AdaptiveStream, audio: AdaptiveStream)?,
+        progressive: AdaptiveStream?
+    ) {
         let key = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w"
         let ver = "20.10.38"
         let ua = "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip"
         guard let url = URL(string: "https://www.youtube.com/youtubei/v1/player?key=\(key)&prettyPrint=false") else {
-            return nil
+            return (nil, nil)
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -378,37 +407,48 @@ public class TubeLiteGatewayClient: ObservableObject {
             let (data, response) = try await session.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200,
                   let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let streamingData = json["streamingData"] as? [String: Any],
-                  let formats = streamingData["formats"] as? [[String: Any]] else {
-                return nil
+                  let streamingData = json["streamingData"] as? [String: Any] else {
+                return (nil, nil)
             }
-            for format in formats {
-                let mime = (format["mimeType"] as? String)?.lowercased() ?? ""
-                guard mime.contains("avc1"), mime.contains("mp4a"),
-                      let streamURL = resolveFormatURL(from: format) else { continue }
-                let approx: Double? = {
-                    if let s = format["approxDurationMs"] as? String { return Double(s) }
-                    if let n = format["approxDurationMs"] as? Double { return n }
-                    if let n = format["approxDurationMs"] as? Int { return Double(n) }
-                    return nil
-                }()
-                return AdaptiveStream(
-                    url: streamURL,
-                    itag: format["itag"] as? Int,
-                    mimeType: format["mimeType"] as? String ?? mime,
-                    codecs: extractCodecs(from: format["mimeType"] as? String ?? ""),
-                    bandwidth: intValue(format["bitrate"]) ?? 0,
-                    averageBitrate: intValue(format["averageBitrate"]),
-                    width: intValue(format["width"]),
-                    height: intValue(format["height"]),
-                    fps: intValue(format["fps"]),
-                    approxDurationMs: approx
-                )
+            
+            let adaptive = pickBestAdaptivePair(from: streamingData, allowAV1: allowAV1)
+            
+            var bestProgressive: AdaptiveStream?
+            if let formats = streamingData["formats"] as? [[String: Any]] {
+                for format in formats {
+                    let mime = (format["mimeType"] as? String)?.lowercased() ?? ""
+                    guard mime.contains("avc1"), mime.contains("mp4a"),
+                          let streamURL = resolveFormatURL(from: format) else { continue }
+                    let approx: Double? = {
+                        if let s = format["approxDurationMs"] as? String { return Double(s) }
+                        if let n = format["approxDurationMs"] as? Double { return n }
+                        if let n = format["approxDurationMs"] as? Int { return Double(n) }
+                        return nil
+                    }()
+                    let candidate = AdaptiveStream(
+                        url: streamURL,
+                        itag: format["itag"] as? Int,
+                        mimeType: format["mimeType"] as? String ?? mime,
+                        codecs: extractCodecs(from: format["mimeType"] as? String ?? ""),
+                        bandwidth: intValue(format["bitrate"]) ?? 0,
+                        averageBitrate: intValue(format["averageBitrate"]),
+                        width: intValue(format["width"]),
+                        height: intValue(format["height"]),
+                        fps: intValue(format["fps"]),
+                        approxDurationMs: approx
+                    )
+                    let candidateH = candidate.height ?? 0
+                    let bestH = bestProgressive?.height ?? -1
+                    if candidateH > bestH
+                        || (candidateH == bestH && candidate.bandwidth > (bestProgressive?.bandwidth ?? 0)) {
+                        bestProgressive = candidate
+                    }
+                }
             }
+            return (adaptive, bestProgressive)
         } catch {
-            return nil
+            return (nil, nil)
         }
-        return nil
     }
     
     // MARK: - Adaptive Format Parsing

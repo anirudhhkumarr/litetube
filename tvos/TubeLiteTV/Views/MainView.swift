@@ -56,10 +56,6 @@ private struct HomeFeedView: View {
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 20) {
-                header
-                    .padding(.horizontal, TLTheme.pageInset)
-                    .padding(.top, 16)
-                
                 if client.isLoading && videos.isEmpty {
                     ProgressView()
                         .frame(maxWidth: .infinity)
@@ -83,7 +79,7 @@ private struct HomeFeedView: View {
                         action: auth.isSignedIn ? { Task { await client.fetchHomeFeed() } } : nil
                     )
                 } else {
-                    LazyVGrid(columns: columns, alignment: .center, spacing: TLTheme.gridGap) {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: TLTheme.gridGap) {
                         ForEach(Array(videos.enumerated()), id: \.element.id) { index, video in
                             VideoCardView(video: video, onSelect: onSelect)
                                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -95,6 +91,7 @@ private struct HomeFeedView: View {
                         }
                     }
                     .padding(.horizontal, TLTheme.pageInset)
+                    .padding(.top, 16)
                     
                     if client.isLoadingMore {
                         ProgressView()
@@ -112,16 +109,6 @@ private struct HomeFeedView: View {
             }
         }
     }
-    
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            TLBrandMark()
-            Spacer()
-            Text(auth.isSignedIn ? "For You" : "Explore")
-                .font(.callout)
-                .foregroundColor(TLTheme.textSecondary)
-        }
-    }
 }
 
 // MARK: - Search
@@ -132,6 +119,7 @@ private struct SearchFeedView: View {
     
     @State private var query = ""
     @State private var appliedQuery = ""
+    @FocusState private var searchFieldFocused: Bool
     
     private var videos: [VideoItem] {
         client.searchResults.filter { !$0.isShort }
@@ -145,24 +133,17 @@ private struct SearchFeedView: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Search")
-                .font(.title2.weight(.semibold))
-                .foregroundColor(TLTheme.textPrimary)
+        VStack(alignment: .leading, spacing: 0) {
+            TextField("Search YouTube", text: $query)
+                .font(.body)
+                .textFieldStyle(.plain)
+                .submitLabel(.search)
+                .onSubmit(submit)
+                .focused($searchFieldFocused)
+                .focusEffectDisabled(true)
                 .padding(.horizontal, TLTheme.pageInset)
                 .padding(.top, 20)
-            
-            HStack(spacing: 16) {
-                TextField("Search YouTube", text: $query)
-                    .font(.body)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 14)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(TLTheme.surface))
-                    .onSubmit(submit)
-                
-                TLButton("Search", systemImage: "magnifyingglass", action: submit)
-            }
-            .padding(.horizontal, TLTheme.pageInset)
+                .padding(.bottom, 8)
             
             ScrollView(.vertical, showsIndicators: false) {
                 Group {
@@ -170,7 +151,7 @@ private struct SearchFeedView: View {
                         TLEmptyState(
                             systemImage: "magnifyingglass",
                             title: "Find something to watch",
-                            message: "Search for videos, channels, or topics."
+                            message: "Type a query and press Done to search."
                         )
                     } else if client.isLoading && videos.isEmpty {
                         ProgressView()
@@ -183,7 +164,7 @@ private struct SearchFeedView: View {
                             message: "Try different keywords."
                         )
                     } else {
-                        LazyVGrid(columns: columns, alignment: .center, spacing: TLTheme.gridGap) {
+                        LazyVGrid(columns: columns, alignment: .leading, spacing: TLTheme.gridGap) {
                             ForEach(Array(videos.enumerated()), id: \.element.id) { index, video in
                                 VideoCardView(video: video, onSelect: onSelect)
                                     .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -203,10 +184,12 @@ private struct SearchFeedView: View {
                         }
                     }
                 }
+                .padding(.top, 36)
                 .padding(.bottom, 48)
             }
         }
         .background(TLTheme.canvas.ignoresSafeArea())
+        .defaultFocus($searchFieldFocused, true)
     }
     
     private func submit() {

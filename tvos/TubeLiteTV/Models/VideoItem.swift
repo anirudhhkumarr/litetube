@@ -42,6 +42,85 @@ public struct VideoItem: Identifiable, Hashable, Codable {
         self.videoDescription = videoDescription
         self.subscriberCount = subscriberCount
     }
+    
+    /// "1.2M views · 3 days ago" — compact count + age when present.
+    public var cardStatsLine: String {
+        VideoMetaFormat.statsLine(views: views, publishedAt: publishedAt)
+    }
+}
+
+/// Compact view counts (K/M/B) and age line for cards / watch meta.
+public enum VideoMetaFormat {
+    public static func statsLine(views: String, publishedAt: String) -> String {
+        let parts = [compactViews(views), age(publishedAt)].filter { !$0.isEmpty }
+        return parts.joined(separator: "  ·  ")
+    }
+    
+    public static func age(_ publishedAt: String) -> String {
+        publishedAt.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    /// "1,234,567 views" / "4.8 million views" / "800K views" → "1.2M views"
+    public static func compactViews(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        guard let n = parseCount(trimmed) else { return trimmed }
+        return "\(formatCompact(n)) views"
+    }
+    
+    public static func parseCount(_ raw: String) -> Int64? {
+        let lower = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !lower.isEmpty else { return nil }
+        if lower.contains("no view") { return 0 }
+        
+        let patterns: [(String, Double)] = [
+            (#"([\d,.]+)\s*billion\b"#, 1_000_000_000),
+            (#"([\d,.]+)\s*million\b"#, 1_000_000),
+            (#"([\d,.]+)\s*thousand\b"#, 1_000),
+            (#"([\d,.]+)\s*b\b"#, 1_000_000_000),
+            (#"([\d,.]+)\s*m\b"#, 1_000_000),
+            (#"([\d,.]+)\s*k\b"#, 1_000),
+            (#"([\d,.]+)"#, 1),
+        ]
+        
+        for (pattern, mult) in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
+                continue
+            }
+            let ns = lower as NSString
+            guard let match = regex.firstMatch(in: lower, range: NSRange(location: 0, length: ns.length)),
+                  match.numberOfRanges >= 2,
+                  let numRange = Range(match.range(at: 1), in: lower) else {
+                continue
+            }
+            let numStr = String(lower[numRange]).replacingOccurrences(of: ",", with: "")
+            guard let base = Double(numStr) else { continue }
+            return Int64((base * mult).rounded())
+        }
+        return nil
+    }
+    
+    public static func formatCompact(_ n: Int64) -> String {
+        let absN = abs(n)
+        if absN >= 1_000_000_000 {
+            return trimDecimal(Double(n) / 1_000_000_000) + "B"
+        }
+        if absN >= 1_000_000 {
+            return trimDecimal(Double(n) / 1_000_000) + "M"
+        }
+        if absN >= 1_000 {
+            return trimDecimal(Double(n) / 1_000) + "K"
+        }
+        return "\(n)"
+    }
+    
+    private static func trimDecimal(_ value: Double) -> String {
+        let rounded = (value * 10).rounded() / 10
+        if rounded == rounded.rounded(.towardZero) {
+            return String(Int(rounded))
+        }
+        return String(format: "%.1f", rounded)
+    }
 }
 
 /// Robust JSON parser for YouTube InnerTube browse, search, and watch next payloads
@@ -189,7 +268,7 @@ public enum InnerTubeParser {
                 if let thumb = owner["thumbnail"] as? [String: Any],
                    let thumbs = thumb["thumbnails"] as? [[String: Any]],
                    let first = thumbs.first?["url"] as? String {
-                    channelThumbUrl = URL(string: first)
+                    channelThumbUrl = ThumbnailURL.normalize(URL(string: first))
                 }
             }
             
@@ -288,18 +367,7 @@ public enum InnerTubeParser {
         }
         
         // Extract Channel Thumbnail URL
-        var channelThumbUrl: URL? = nil
-        if let renderers = dict["channelThumbnailSupportedRenderers"] as? [String: Any],
-           let linkRenderer = renderers["channelThumbnailWithLinkRenderer"] as? [String: Any],
-           let thumb = linkRenderer["thumbnail"] as? [String: Any],
-           let thumbs = thumb["thumbnails"] as? [[String: Any]],
-           let first = thumbs.first?["url"] as? String {
-            channelThumbUrl = URL(string: first)
-        } else if let channelThumb = dict["channelThumbnail"] as? [String: Any],
-                  let thumbs = channelThumb["thumbnails"] as? [[String: Any]],
-                  let first = thumbs.first?["url"] as? String {
-            channelThumbUrl = URL(string: first)
-        }
+        let channelThumbUrl = extractChannelThumbnailURL(from: dict)
         
         // Filter out shorts
         let isShort = duration.contains("0:") && (Int(duration.replacingOccurrences(of: "0:", with: "")) ?? 99) < 60
@@ -513,22 +581,10 @@ public enum InnerTubeParser {
             thumbUrl = ThumbnailURL.normalize(thumbUrl)
         }
         
-        // Channel Thumbnail from lockupMetadata
-        var channelThumbUrl: URL? = nil
-        if let avatar = lockupMetadata?["avatar"] as? [String: Any] {
-            if let decorated = avatar["decoratedAvatarViewModel"] as? [String: Any],
-               let avm = (decorated["avatar"] as? [String: Any])?["avatarViewModel"] as? [String: Any],
-               let image = avm["image"] as? [String: Any],
-               let sources = image["sources"] as? [[String: Any]],
-               let first = sources.first?["url"] as? String {
-                channelThumbUrl = URL(string: first)
-            } else if let avm = avatar["avatarViewModel"] as? [String: Any],
-                      let image = avm["image"] as? [String: Any],
-                      let sources = image["sources"] as? [[String: Any]],
-                      let first = sources.first?["url"] as? String {
-                channelThumbUrl = URL(string: first)
-            }
-        }
+        // Channel Thumbnail from lockupMetadata / nested avatar paths
+        let channelThumbUrl = extractChannelThumbnailURL(from: dict)
+            ?? extractChannelThumbnailURL(from: lockupMetadata ?? [:])
+            ?? extractChannelThumbnailURL(from: metadata ?? [:])
         
         return VideoItem(
             id: videoId,
@@ -683,6 +739,11 @@ public enum InnerTubeParser {
             thumbUrl = URL(string: "https://i.ytimg.com/vi/\(videoId)/hqdefault.jpg")
         }
         
+        let channelThumbUrl = extractChannelThumbnailURL(from: dict)
+            ?? extractChannelThumbnailURL(from: meta ?? [:])
+            ?? extractChannelThumbnailURL(from: tileMeta ?? [:])
+            ?? extractChannelThumbnailURL(from: tileHeader ?? [:])
+        
         return VideoItem(
             id: videoId,
             title: title,
@@ -692,9 +753,91 @@ public enum InnerTubeParser {
             views: views,
             publishedAt: publishedAt,
             thumbnailUrl: thumbUrl,
-            channelThumbnailUrl: nil,
+            channelThumbnailUrl: channelThumbUrl,
             isShort: isShort
         )
+    }
+    
+    /// Pull a real channel avatar URL from any known InnerTube shape (WEB / TV / lockup).
+    private static func extractChannelThumbnailURL(from dict: [String: Any]) -> URL? {
+        if dict.isEmpty { return nil }
+        
+        // Classic videoRenderer
+        if let renderers = dict["channelThumbnailSupportedRenderers"] as? [String: Any],
+           let linkRenderer = renderers["channelThumbnailWithLinkRenderer"] as? [String: Any],
+           let url = bestThumbnailURL(from: linkRenderer["thumbnail"]) {
+            return url
+        }
+        if let url = bestThumbnailURL(from: dict["channelThumbnail"]) {
+            return url
+        }
+        
+        // Avatar view models (lockup / modern WEB)
+        if let avatar = dict["avatar"] as? [String: Any] {
+            if let decorated = avatar["decoratedAvatarViewModel"] as? [String: Any] {
+                if let avm = (decorated["avatar"] as? [String: Any])?["avatarViewModel"] as? [String: Any],
+                   let url = bestImageSourceURL(from: avm["image"]) {
+                    return url
+                }
+                if let url = bestImageSourceURL(from: decorated["image"]) {
+                    return url
+                }
+            }
+            if let avm = avatar["avatarViewModel"] as? [String: Any],
+               let url = bestImageSourceURL(from: avm["image"]) {
+                return url
+            }
+            if let url = bestImageSourceURL(from: avatar["image"]) {
+                return url
+            }
+            if let url = bestThumbnailURL(from: avatar) {
+                return url
+            }
+        }
+        
+        // lockupMetadataViewModel.image / contentMetadata
+        if let url = bestImageSourceURL(from: dict["image"]) {
+            return url
+        }
+        if let contentMeta = dict["contentMetadata"] as? [String: Any]
+            ?? (dict["contentMetadataViewModel"] as? [String: Any]),
+           let url = extractChannelThumbnailURL(from: contentMeta) {
+            return url
+        }
+        
+        // videoOwnerRenderer-style
+        if let owner = dict["videoOwnerRenderer"] as? [String: Any],
+           let url = bestThumbnailURL(from: owner["thumbnail"]) {
+            return url
+        }
+        if let owner = (dict["owner"] as? [String: Any])?["videoOwnerRenderer"] as? [String: Any],
+           let url = bestThumbnailURL(from: owner["thumbnail"]) {
+            return url
+        }
+        
+        // Shallow scan nested dicts for avatar image sources (TV tiles sometimes nest oddly).
+        for key in ["header", "metadata", "lockupMetadataViewModel", "tileMetadataRenderer", "onAvatarTap"] {
+            if let nested = dict[key] as? [String: Any],
+               let url = extractChannelThumbnailURL(from: nested) {
+                return url
+            }
+        }
+        
+        return nil
+    }
+    
+    private static func bestThumbnailURL(from obj: Any?) -> URL? {
+        guard let dict = obj as? [String: Any] else { return nil }
+        let thumbs = dict["thumbnails"] as? [[String: Any]] ?? []
+        let urlString = (thumbs.last?["url"] as? String) ?? (thumbs.first?["url"] as? String)
+        return ThumbnailURL.normalize(urlString.flatMap(URL.init(string:)))
+    }
+    
+    private static func bestImageSourceURL(from obj: Any?) -> URL? {
+        guard let dict = obj as? [String: Any] else { return nil }
+        let sources = dict["sources"] as? [[String: Any]] ?? []
+        let urlString = (sources.last?["url"] as? String) ?? (sources.first?["url"] as? String)
+        return ThumbnailURL.normalize(urlString.flatMap(URL.init(string:)))
     }
     
     private static func extractRunsText(_ obj: Any?) -> String? {

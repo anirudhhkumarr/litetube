@@ -66,25 +66,33 @@ public struct ThumbnailFrame<Content: View>: View {
     public var body: some View {
         Color.clear
             .aspectRatio(16 / 9, contentMode: .fit)
+            .frame(maxWidth: .infinity)
             .overlay {
                 content()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .clipped()
             }
             .clipped()
+            // Prevent LazyVGrid row stretching from growing the thumb.
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
 public enum ThumbnailURL {
     public static func candidates(primary: URL?, videoId: String?) -> [URL] {
         var list: [URL] = []
+        if let id = videoId, !id.isEmpty {
+            // Best quality first — exists for most modern videos.
+            if let u = URL(string: "https://i.ytimg.com/vi/\(id)/maxresdefault.jpg") {
+                list.append(u)
+            }
+        }
+        // API-provided URL as primary fallback (guaranteed to exist).
         if let n = normalize(primary) { list.append(n) }
         if let id = videoId, !id.isEmpty {
-            // Prefer true 16:9 assets first; hqdefault/sddefault are 4:3 with bars.
-            for file in ["maxresdefault.jpg", "hq720.jpg", "mqdefault.jpg", "hqdefault.jpg", "sddefault.jpg"] {
-                if let u = URL(string: "https://i.ytimg.com/vi/\(id)/\(file)") {
-                    list.append(u)
-                }
+            // Last resort — always exists, true 4:3 but usable.
+            if let u = URL(string: "https://i.ytimg.com/vi/\(id)/hqdefault.jpg") {
+                list.append(u)
             }
         }
         var seen = Set<String>()
@@ -97,5 +105,36 @@ public enum ThumbnailURL {
         if s.hasPrefix("//") { s = "https:" + s }
         if s.hasPrefix("http://") { s = "https://" + String(s.dropFirst(7)) }
         return URL(string: s)
+    }
+    
+    /// yt3 avatar URLs often need an explicit size suffix; try a few reliable sizes.
+    public static func channelCandidates(primary: URL?, side: Int) -> [URL] {
+        guard let s = normalize(primary)?.absoluteString else { return [] }
+        let px = max(side, 88)
+        var list: [URL] = []
+        
+        // Try requested size, then common reliable sizes
+        let sizes = Array(Set([px, 176, 240])).sorted()
+        
+        if let range = s.range(of: #"=s\d+"#, options: .regularExpression) {
+            for sz in sizes {
+                let sized = s.replacingCharacters(in: range, with: "=s\(sz)")
+                if let u = URL(string: sized) { list.append(u) }
+            }
+            // Bare URL without size param as last resort
+            let bare = s[s.startIndex..<range.lowerBound]
+            if let u = URL(string: String(bare)) { list.append(u) }
+        } else if !s.contains("=s") {
+            // Original URL as-is first
+            if let u = URL(string: s) { list.append(u) }
+            for sz in sizes {
+                if let u = URL(string: s + "=s\(sz)-c-k-c0x00ffffff-no-rj") { list.append(u) }
+            }
+        } else {
+            if let u = URL(string: s) { list.append(u) }
+        }
+        
+        var seen = Set<String>()
+        return list.filter { seen.insert($0.absoluteString).inserted }
     }
 }

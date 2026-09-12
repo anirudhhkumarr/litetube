@@ -6,6 +6,8 @@ public struct PlayerView: View {
     public let videoId: String
     public let onOpenAccount: () -> Void
     public let onDismiss: () -> Void
+    /// Publishes the latest stream-resolution / AVPlayer log so WatchView can show a Logs button after back.
+    public let onDiagnostics: (TubeLiteGatewayClient.PlaybackDiagnostics?, String?) -> Void
     
     @State private var player: AVPlayer? = nil
     @State private var resourceLoader: TubeLiteResourceLoader? = nil
@@ -36,11 +38,13 @@ public struct PlayerView: View {
     public init(
         videoId: String,
         onOpenAccount: @escaping () -> Void = {},
-        onDismiss: @escaping () -> Void
+        onDismiss: @escaping () -> Void,
+        onDiagnostics: @escaping (TubeLiteGatewayClient.PlaybackDiagnostics?, String?) -> Void = { _, _ in }
     ) {
         self.videoId = videoId
         self.onOpenAccount = onOpenAccount
         self.onDismiss = onDismiss
+        self.onDiagnostics = onDiagnostics
     }
     
     public var body: some View {
@@ -76,10 +80,17 @@ public struct PlayerView: View {
         }
         .onExitCommand { closePlayer() }
         .task(id: videoId) { await setupAndPlay() }
-        .onDisappear { teardownPlayer() }
+        .onDisappear {
+            publishDiagnostics()
+            teardownPlayer()
+        }
         .onChange(of: streamError) { _, newValue in
             if newValue != nil { focusedErrorAction = .tryAgain }
         }
+    }
+    
+    private func publishDiagnostics() {
+        onDiagnostics(diagnostics, avPlayerErrorLog)
     }
     
     private var bufferingOverlay: some View {
@@ -201,9 +212,15 @@ public struct PlayerView: View {
         
         // Resolve stream first — sponsors load after playback starts.
         loadingStage = "Resolving streams…"
-        let resolution = await TubeLiteGatewayClient.shared.resolvePlaybackItem(videoId: videoId)
+        let resolution = await PlaybackPreloadCache.shared.resolution(for: videoId)
         guard !Task.isCancelled else { return }
-        self.diagnostics = resolution.diagnostics
+        var diag = resolution.diagnostics
+        diag.log("Selected: \(resolution.selectedHeight)p · \(resolution.selectedCodec ?? "unknown codec")")
+        if resolution.isPlayable {
+            diag.log("Stream ready (preloaded or fresh)")
+        }
+        self.diagnostics = diag
+        publishDiagnostics()
         
         guard resolution.isPlayable else {
             self.isLoadingStream = false
@@ -216,6 +233,7 @@ public struct PlayerView: View {
         loadingStage = "Starting…"
         var item: AVPlayerItem?
         
+        // Proven order (Init): AV1 composition only when selected, else filtered HLS, else progressive.
         let codec = (resolution.selectedCodec ?? "").lowercased()
         let wantsComposition = codec != "avc1 hls"
             && codec.contains("av01")
@@ -235,9 +253,11 @@ public struct PlayerView: View {
                     d.log("Playing via A/V composition @ \(resolution.selectedHeight)p")
                     self.diagnostics = d
                 }
+                publishDiagnostics()
             } else if var d = self.diagnostics {
                 d.log("Composition unavailable — falling back")
                 self.diagnostics = d
+                publishDiagnostics()
             }
         }
         
@@ -253,7 +273,10 @@ public struct PlayerView: View {
                 d.log("Playing via filtered HLS (max \(resolution.selectedHeight)p)")
                 self.diagnostics = d
             }
+            publishDiagnostics()
         }
+        
+        guard !Task.isCancelled else { return }
         
         if item == nil, let progressive = resolution.progressiveURL {
             self.resourceLoader = nil
@@ -262,7 +285,10 @@ public struct PlayerView: View {
                 d.log("Playing via progressive MP4")
                 self.diagnostics = d
             }
+            publishDiagnostics()
         }
+        
+        guard !Task.isCancelled else { return }
         
         if item == nil,
            let videoURL = resolution.compositionVideoURL,
@@ -276,6 +302,7 @@ public struct PlayerView: View {
                     d.log("Playing via fallback A/V composition")
                     self.diagnostics = d
                 }
+                publishDiagnostics()
             }
         }
         
@@ -404,22 +431,25 @@ public struct PlayerView: View {
     
     private func capturePlayerFailure(from item: AVPlayerItem) {
         var parts: [String] = []
-        if let err = item.error as NSError? {
-            parts.append("\(err.domain) \(err.code): \(err.localizedDescription)")
-            if let underlying = err.userInfo[NSUnderlyingErrorKey] as? NSError {
-                parts.append("Underlying: \(underlying.domain) \(underlying.code): \(underlying.localizedDescription)")
-            }
+        if let err = item.error {
+            parts.append(Self.formatNSError(err))
         }
         appendErrorLog(from: item)
-        if let avLog = avPlayerErrorLog {
+        if let avLog = avPlayerErrorLog, !avLog.isEmpty {
             parts.append(avLog)
         }
         let detailed = parts.joined(separator: "\n")
         print("[TubeLiteTV] AVPlayerItem failed:\n\(detailed)")
         avPlayerErrorLog = detailed
-        // -12660 = HTTP 403 from CDN
-        if detailed.contains("-12660") {
-            streamError = "Stream forbidden (HTTP 403 / CoreMedia -12660). CDN rejected the media request."
+        if var d = diagnostics {
+            d.log("AVPlayer failed: \(detailed)")
+            diagnostics = d
+        }
+        publishDiagnostics()
+        if detailed.contains("-12660") || detailed.contains("CDN HTTP 403") {
+            streamError = "Stream forbidden (HTTP 403). CDN rejected the media request."
+        } else if detailed.contains("-11800") {
+            streamError = "Playback failed (AVError -11800). See Logs for full detail."
         } else {
             streamError = "Playback Failed"
         }
@@ -438,9 +468,11 @@ public struct PlayerView: View {
             }
         }
         avPlayerErrorLog = lines.joined(separator: "\n")
+        publishDiagnostics()
     }
     
     private func closePlayer() {
+        publishDiagnostics()
         teardownPlayer()
         onDismiss()
     }
@@ -483,6 +515,21 @@ public struct PlayerView: View {
         }
     }
     
+    private static func formatNSError(_ error: Error) -> String {
+        var parts: [String] = []
+        var current: NSError? = error as NSError
+        var depth = 0
+        while let err = current, depth < 6 {
+            parts.append("\(err.domain) \(err.code): \(err.localizedDescription)")
+            if let reason = err.userInfo[NSLocalizedFailureReasonErrorKey] as? String, !reason.isEmpty {
+                parts.append("reason: \(reason)")
+            }
+            current = err.userInfo[NSUnderlyingErrorKey] as? NSError
+            depth += 1
+        }
+        return parts.joined(separator: " | ")
+    }
+    
     /// Mux remote progressive video + audio into one AVPlayerItem (needed for AV1 4K).
     private static func makeCompositionPlayerItem(videoURL: URL, audioURL: URL) async -> AVPlayerItem? {
         do {
@@ -516,7 +563,7 @@ public struct PlayerView: View {
             
             return AVPlayerItem(asset: mix)
         } catch {
-            print("[TubeLiteTV] Composition failed: \(error)")
+            print("[TubeLiteTV] Composition failed: \(formatNSError(error))")
             return nil
         }
     }

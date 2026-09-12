@@ -16,10 +16,17 @@ public enum TLTheme {
     public static let warning = Color(red: 1.0, green: 0.62, blue: 0.04)
     
     public static let pageInset: CGFloat = 60
-    public static let gridColumns = 4
-    public static let gridGap: CGFloat = 28
+    public static let gridColumns = 3
+    public static let gridGap: CGFloat = 32
     public static let cardSpacing: CGFloat = 28
-    public static let relatedCardWidth: CGFloat = 320
+    /// Horizontal “up next” tray — same card scale as the 3-up home grid.
+    public static let trayCardWidth: CGFloat = 560
+    public static let trayThumbHeight: CGFloat = trayCardWidth * 9 / 16
+    public static let relatedCardWidth: CGFloat = trayCardWidth
+    public static let relatedThumbHeight: CGFloat = trayThumbHeight
+    public static let relatedMetaHeight: CGFloat = 100
+    /// Shared meta block height so home + tray cards stay aligned in a row.
+    public static let cardMetaHeight: CGFloat = 118
     
     public static let radiusThumb: CGFloat = 10
     public static let spring = Animation.spring(response: 0.32, dampingFraction: 0.86)

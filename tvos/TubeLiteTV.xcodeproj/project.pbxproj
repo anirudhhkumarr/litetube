@@ -17,6 +17,7 @@
 		AA1000242C88000100000001 /* AccountTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000252C88000100000001 /* AccountTabView.swift */; };
 		AA1000282C88000100000001 /* WatchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000292C88000100000001 /* WatchView.swift */; };
 		AA10002A2C88000100000001 /* TubeLiteResourceLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA10002B2C88000100000001 /* TubeLiteResourceLoader.swift */; };
+		AA1000362C88000100000001 /* PlaybackPreloadCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000372C88000100000001 /* PlaybackPreloadCache.swift */; };
 		AA10002E2C88000100000001 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA10002F2C88000100000001 /* Theme.swift */; };
 		AA1000302C88000100000001 /* RemoteImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000312C88000100000001 /* RemoteImage.swift */; };
 		AA1000322C88000100000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA1000332C88000100000001 /* Assets.xcassets */; };
@@ -35,6 +36,7 @@
 		AA1000252C88000100000001 /* AccountTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountTabView.swift; sourceTree = "<group>"; };
 		AA1000292C88000100000001 /* WatchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchView.swift; sourceTree = "<group>"; };
 		AA10002B2C88000100000001 /* TubeLiteResourceLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TubeLiteResourceLoader.swift; sourceTree = "<group>"; };
+		AA1000372C88000100000001 /* PlaybackPreloadCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackPreloadCache.swift; sourceTree = "<group>"; };
 		AA10002F2C88000100000001 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		AA1000312C88000100000001 /* RemoteImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImage.swift; sourceTree = "<group>"; };
 		AA1000332C88000100000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -93,6 +95,7 @@
 			children = (
 				AA1000062C88000100000001 /* TubeLiteGatewayClient.swift */,
 				AA10002B2C88000100000001 /* TubeLiteResourceLoader.swift */,
+				AA1000372C88000100000001 /* PlaybackPreloadCache.swift */,
 				AA1000232C88000100000001 /* DeviceAuthService.swift */,
 			);
 			path = Services;
@@ -185,6 +188,7 @@
 				AA1000032C88000100000001 /* VideoItem.swift in Sources */,
 				AA1000052C88000100000001 /* TubeLiteGatewayClient.swift in Sources */,
 				AA10002A2C88000100000001 /* TubeLiteResourceLoader.swift in Sources */,
+				AA1000362C88000100000001 /* PlaybackPreloadCache.swift in Sources */,
 				AA10002E2C88000100000001 /* Theme.swift in Sources */,
 				AA1000302C88000100000001 /* RemoteImage.swift in Sources */,
 				AA1000222C88000100000001 /* DeviceAuthService.swift in Sources */,

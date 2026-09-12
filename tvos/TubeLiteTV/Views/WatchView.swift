@@ -12,7 +12,13 @@ public struct WatchView: View {
     @State private var isLoadingRelated = true
     @State private var isPlaying = true
     
+    @State private var lastDiagnostics: TubeLiteGatewayClient.PlaybackDiagnostics? = nil
+    @State private var lastAVPlayerLog: String? = nil
+    @State private var showLogs = false
+    
     @FocusState private var heroFocused: Bool
+    @FocusState private var logsButtonFocused: Bool
+    @FocusState private var logsCloseFocused: Bool
     
     public init(
         video: VideoItem,
@@ -30,9 +36,11 @@ public struct WatchView: View {
     }
     
     private var metaLine: String {
-        [currentVideo.views, currentVideo.publishedAt]
-            .filter { !$0.isEmpty }
-            .joined(separator: "  ·  ")
+        currentVideo.cardStatsLine
+    }
+    
+    private var hasLogs: Bool {
+        lastDiagnostics != nil || !(lastAVPlayerLog ?? "").isEmpty
     }
     
     public var body: some View {
@@ -44,27 +52,46 @@ public struct WatchView: View {
                     heroButton(width: layout.width, height: layout.height)
                         .frame(maxWidth: .infinity)
                         .padding(.top, 16)
+                        .padding(.horizontal, TLTheme.pageInset)
                     
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(currentVideo.title)
-                            .font(.callout.weight(.semibold))
-                            .foregroundColor(TLTheme.textPrimary)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
+                    HStack(alignment: .top, spacing: 14) {
+                        ChannelAvatar(
+                            url: currentVideo.channelThumbnailUrl,
+                            channelTitle: currentVideo.channelTitle,
+                            size: 48
+                        )
                         
-                        if !currentVideo.channelTitle.isEmpty {
-                            Text(currentVideo.channelTitle)
-                                .font(.caption)
-                                .foregroundColor(TLTheme.textSecondary)
-                                .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(currentVideo.title)
+                                .font(.callout.weight(.semibold))
+                                .foregroundColor(TLTheme.textPrimary)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                            
+                            HStack(alignment: .center, spacing: 16) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    if !currentVideo.channelTitle.isEmpty {
+                                        Text(currentVideo.channelTitle)
+                                            .font(.caption)
+                                            .foregroundColor(TLTheme.textSecondary)
+                                            .lineLimit(1)
+                                    }
+                                    
+                                    if !metaLine.isEmpty {
+                                        Text(metaLine)
+                                            .font(.caption2)
+                                            .foregroundColor(TLTheme.textTertiary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                
+                                if hasLogs {
+                                    logsButton
+                                }
+                            }
                         }
-                        
-                        if !metaLine.isEmpty {
-                            Text(metaLine)
-                                .font(.caption2)
-                                .foregroundColor(TLTheme.textTertiary)
-                                .lineLimit(1)
-                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(.horizontal, TLTheme.pageInset)
                     
@@ -77,6 +104,9 @@ public struct WatchView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(TLTheme.canvas.ignoresSafeArea())
         .defaultFocus($heroFocused, true)
+        .fullScreenCover(isPresented: $showLogs) {
+            logsSheet
+        }
         .fullScreenCover(isPresented: $isPlaying, onDismiss: restoreFocus) {
             PlayerView(
                 videoId: currentVideo.id,
@@ -84,7 +114,11 @@ public struct WatchView: View {
                     isPlaying = false
                     onOpenAccount()
                 },
-                onDismiss: { isPlaying = false }
+                onDismiss: { isPlaying = false },
+                onDiagnostics: { diag, avLog in
+                    lastDiagnostics = diag
+                    lastAVPlayerLog = avLog
+                }
             )
             .id(currentVideo.id)
         }
@@ -98,9 +132,16 @@ public struct WatchView: View {
         .onChange(of: isPlaying) { _, playing in
             if !playing { restoreFocus() }
         }
+        .onChange(of: currentVideo.id) { _, _ in
+            lastDiagnostics = nil
+            lastAVPlayerLog = nil
+            showLogs = false
+        }
         .onDisappear {
             // Nested cover can linger — force player closed when leaving watch.
             isPlaying = false
+            // Cancel any in-flight preloads so they don't stall the home feed.
+            PlaybackPreloadCache.shared.cancelAll()
         }
         .task(id: currentVideo.id) {
             // Playback first: defer related so stream resolve gets the network.
@@ -116,18 +157,106 @@ public struct WatchView: View {
         }
     }
     
-    /// Fit a true 16:9 hero so title/channel stay fully visible and related peeks below.
+    /// Fit a true 16:9 hero so title/channel stay visible and related thumbs only half-peek.
     private static func heroLayout(in size: CGSize) -> (width: CGFloat, height: CGFloat) {
         let maxWidth = max(320, size.width - TLTheme.pageInset * 2)
-        // Reserve space: top pad + title/channel/meta + related peek.
-        let reserved: CGFloat = 16 + 96 + 150
-        let maxHeight = max(260, size.height - reserved)
+        // Top pad + title/channel/meta + ~half a related thumbnail (not a full card).
+        let relatedPeek = TLTheme.trayThumbHeight * 0.5
+        let reserved: CGFloat = 16 + 88 + relatedPeek
+        let maxHeight = max(280, size.height - reserved)
         let heightFromWidth = maxWidth * 9 / 16
         if heightFromWidth <= maxHeight {
             return (maxWidth, heightFromWidth)
         }
         let width = maxHeight * 16 / 9
         return (width, maxHeight)
+    }
+    
+    private var logsButton: some View {
+        Button {
+            showLogs = true
+        } label: {
+            Text("Logs")
+                .font(.caption.weight(.semibold))
+                .foregroundColor(logsButtonFocused ? TLTheme.canvas : TLTheme.accent)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(logsButtonFocused ? Color.white : TLTheme.surfaceElevated)
+                )
+        }
+        .buttonStyle(TLBareButtonStyle())
+        .focused($logsButtonFocused)
+        .focusEffectDisabled(true)
+        .accessibilityLabel("Video playback logs")
+    }
+    
+    private var logLines: [String] {
+        var lines: [String] = []
+        if let diag = lastDiagnostics {
+            lines.append(contentsOf: diag.executionTimeline.reversed())
+            if let avLog = lastAVPlayerLog, !avLog.isEmpty {
+                lines.append(contentsOf: avLog.components(separatedBy: "\n").filter { !$0.isEmpty }.reversed())
+            }
+            lines.append("Video: \(diag.videoId)")
+            lines.append("Stage: \(diag.failureStage ?? "None")")
+            lines.append("HTTP: \(diag.primaryHttpStatus.map(String.init) ?? "N/A")")
+            lines.append("Playability: \(diag.primaryPlayabilityStatus ?? "N/A")")
+            if let reason = diag.primaryPlayabilityReason, !reason.isEmpty {
+                lines.append("Reason: \(reason)")
+            }
+            if let url = diag.resolvedUrl, !url.isEmpty {
+                lines.append("URL: \(url)")
+            }
+        } else if let avLog = lastAVPlayerLog, !avLog.isEmpty {
+            lines.append(contentsOf: avLog.components(separatedBy: "\n").filter { !$0.isEmpty }.reversed())
+        } else {
+            lines.append("No stream diagnostics captured yet.")
+        }
+        return lines
+    }
+    
+    private var logsSheet: some View {
+        ZStack {
+            TLTheme.canvas.ignoresSafeArea()
+            
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text("Playback Logs")
+                        .font(.title3.weight(.semibold))
+                        .foregroundColor(TLTheme.textPrimary)
+                    Spacer()
+                    Button("Close") {
+                        showLogs = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(logsCloseFocused ? .white : TLTheme.surfaceElevated)
+                    .focused($logsCloseFocused)
+                }
+                .padding(.horizontal, TLTheme.pageInset)
+                .padding(.top, 36)
+                .padding(.bottom, 20)
+                
+                // List is focusable on tvOS so the Siri Remote can scroll.
+                List {
+                    ForEach(Array(logLines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 17, design: .monospaced))
+                            .foregroundColor(
+                                line.contains("-12660") || line.lowercased().contains("error")
+                                ? TLTheme.warning
+                                : TLTheme.textSecondary
+                            )
+                            .listRowBackground(TLTheme.surface)
+                            .listRowInsets(EdgeInsets(top: 6, leading: 24, bottom: 6, trailing: 24))
+                    }
+                }
+                .listStyle(.plain)
+            }
+        }
+        .defaultFocus($logsCloseFocused, true)
+        .onExitCommand { showLogs = false }
     }
     
     @ViewBuilder
@@ -137,19 +266,20 @@ public struct WatchView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.top, 12)
         } else if !relatedItems.isEmpty {
+            // Same card chrome as Home, but a single horizontal tray.
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(alignment: .top, spacing: TLTheme.cardSpacing) {
+                LazyHStack(alignment: .top, spacing: TLTheme.gridGap) {
                     ForEach(relatedItems) { item in
                         VideoCardView(video: item, compact: true) { selected in
                             currentVideo = selected
                             isPlaying = true
                         }
-                        .frame(width: TLTheme.relatedCardWidth)
                     }
                 }
                 .padding(.horizontal, TLTheme.pageInset)
                 .padding(.vertical, 8)
             }
+            .focusSection()
         }
     }
     
@@ -175,6 +305,12 @@ public struct WatchView: View {
         )
         .animation(TLTheme.spring, value: heroFocused)
         .accessibilityLabel("Play \(currentVideo.title)")
+        .task(id: heroFocused) {
+            guard heroFocused else { return }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            PlaybackPreloadCache.shared.preload(videoId: currentVideo.id)
+        }
     }
     
     private func restoreFocus() {
